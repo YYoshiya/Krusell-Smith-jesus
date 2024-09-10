@@ -232,7 +232,7 @@ def rhs_bellman(kp,value,k,K,s_i):
 def compute_expectation(kp, Kp, value, s_i):
     expec = 0
     for s_n_i in range(4):
-        value_itp = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), value[:, :, s_n_i], bounds_error=False, fill_value=None)
+        value_itp = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), value[:, :, s_n_i])
         expec += ksp.transmat.P[s_i, s_n_i] * value_itp((kp, Kp))
     return expec
 
@@ -246,7 +246,7 @@ def maximize_rhs(k_i, K_i, s_i):
     def obj(kp):
         return -rhs_bellman(kp, kss.value, k, K, s_i)
     
-    res = minimize_scalar(obj, bounds=(k_min, min(k_c_pos, k_max)), method='bounded')
+    res = minimize_scalar(obj, bounds=(k_min, k_max), method='bounded')
     
     # 最適化結果の取得
     kss.k_opt[k_i, K_i, s_i] = res.x
@@ -384,11 +384,11 @@ def epsi_zi_to_si(eps_i, z_i, z_size):
 def find_ALM_coef_nn(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
                   tol_B=1e-8, max_iter_B=20, T_discard=100):
     counter_B = 0
+    pretraining()
+    model.to('cpu')
     while True:
-        model.to("cpu")
         counter_B += 1
         print(f" --- Iteration over ALM coefficient: {counter_B} ---")
-        
         # Solve individual problem
         solve_ump(max_iter=max_iter_ump, tol=tol_ump)
         
@@ -418,6 +418,43 @@ class Model(nn.Module):
         x = self.fc3(x)
         return x
 
+def pretraining():
+    model.to(device)
+    data_K = np.linspace(ksp.K_min, ksp.K_max, 30)
+    data_z = np.random.choice(ksp.z_grid, size=30, replace=True)
+    data = np.column_stack((data_K, data_z))
+    pre_dataset = ALMDataset(data, data_K)
+    pre_loader = DataLoader(pre_dataset, batch_size=30, shuffle=True)
+    
+    loss_fn = nn.MSELoss()  # Mean Squared Error Loss
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    
+    # 学習プロセス
+    for t in range(100):
+        for inputs, targets in pre_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            predictions = model(inputs).squeeze()
+            loss = loss_fn(predictions, targets)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    # モデルの予測結果をプロット
+    model.eval()  # モデルを評価モードに設定
+    with torch.no_grad():  # 勾配を計算しない
+        # z_gridの0番目の要素でプロット用データを作成
+        z_plot = np.full(30, ksp.z_grid[0])
+        data_plot = np.column_stack((data_K, z_plot))
+        
+        # モデルの予測値
+        input_plot = torch.tensor(data_plot, dtype=torch.float32).to(device)
+        predictions_plot = model(input_plot).cpu().numpy().squeeze()  # GPUからCPUに戻してnumpyに変換
+        
+        plt.plot(data_K, predictions_plot, label="Predicted", color='blue', linestyle='dashed')  # 予測値
+        plt.xlabel("K")
+        plt.ylabel("Predicted K'")
+        plt.legend()
+        plt.show()
 class ALMDataset(Dataset):
     def __init__(self, input_data, output_data):
         self.input_data = input_data
