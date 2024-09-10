@@ -379,74 +379,6 @@ def simulate_aggregate_path(ksp, kss, zi_shocks, ss):
 def epsi_zi_to_si(eps_i, z_i, z_size):
     return z_i + z_size * (eps_i - 1)
 
-def regress_ALM(ksp, kss, zi_shocks, T_discard=100):
-    n_g = np.sum(zi_shocks[T_discard:-1] == 0)
-    n_b = np.sum(zi_shocks[T_discard:-1] == 1)
-    B_n = np.empty(4)
-    x_g = np.empty(n_g)
-    y_g = np.empty(n_g)
-    x_b = np.empty(n_b)
-    y_b = np.empty(n_b)
-    
-    i_g, i_b = 0, 0
-    
-    for t in range(T_discard, len(zi_shocks) - 1):
-        if zi_shocks[t] == 0:
-            x_g[i_g] = np.log(ss.K_ts[t])
-            y_g[i_g] = np.log(ss.K_ts[t + 1])
-            i_g += 1
-        else:
-            x_b[i_b] = np.log(ss.K_ts[t])
-            y_b[i_b] = np.log(ss.K_ts[t + 1])
-            i_b += 1
-    
-    X_g = sm.add_constant(x_g)
-    X_b = sm.add_constant(x_b)
-    
-    resg = sm.OLS(y_g, X_g).fit()
-    resb = sm.OLS(y_b, X_b).fit()
-    
-    kss.R2 = [resg.rsquared, resb.rsquared]
-    B_n[0], B_n[1] = resg.params
-    B_n[2], B_n[3] = resb.params
-    
-    dif_B = np.max(np.abs(B_n - kss.B))
-    print(f"difference of ALM coefficient is {B_n}")
-    
-    return B_n, dif_B
-
-def find_ALM_coef(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
-                  tol_B=1e-8, max_iter_B=20, update_B=0.3, T_discard=100):
-    counter_B = 0
-    
-    while True:
-        counter_B += 1
-        print(f" --- Iteration over ALM coefficient: {counter_B} ---")
-        
-        # Solve individual problem
-        solve_ump(max_iter=max_iter_ump, tol=tol_ump)
-        
-        # Compute aggregate path of capital
-        simulate_aggregate_path(ksp, kss, zi_shocks, ss)
-        
-        # Obtain new ALM coefficient by regression
-        B_n, dif_B = regress_ALM(ksp, kss, zi_shocks, T_discard=T_discard)
-        
-        # Check convergence
-        if dif_B < tol_B:
-            print("-----------------------------------------------------")
-            print(f"ALM coefficient successfully converged : dif = {dif_B}")
-            print("-----------------------------------------------------")
-            break
-        elif counter_B >= max_iter_B:
-            print("----------------------------------------------------------------")
-            print(f"Iteration over ALM coefficient reached its maximum ({max_iter_B})")
-            print("----------------------------------------------------------------")
-            break
-        
-        # Update B
-        kss.B = update_B * B_n + (1 - update_B) * kss.B
-
 
 def find_ALM_coef_nn(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
                   tol_B=1e-8, max_iter_B=20, T_discard=100):
@@ -556,7 +488,7 @@ ss = Stochastic(zi_shocks, epsi_shocks)
 T_discard = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = Model(2, 1)
-find_ALM_coef(zi_shocks, 
+find_ALM_coef_nn(zi_shocks, 
             tol_ump = 1e-8, max_iter_ump = 10000,
             tol_B = 1e-8, max_iter_B = 3, 
             T_discard = T_discard)
