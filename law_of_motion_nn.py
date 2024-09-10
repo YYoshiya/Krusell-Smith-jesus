@@ -213,12 +213,14 @@ def r(z, K, L):
 def compute_Kp_L(K, s_i):
     K = torch.tensor(K, dtype=torch.float32)
     if s_i % ksp.eps_size == 0:
-        Kp = model(K).detach().numpy()
+        data = torch.stack((K, torch.tensor(ksp.z_grid[0], dtype=torch.float32)))
+        Kp = model(data).detach().numpy()
         L = ksp.l_bar * (1-ksp.ug)
     else:
-        Kp = model(K).detach().numpy()
+        data = torch.stack((K, torch.tensor(ksp.z_grid[1], dtype=torch.float32)))
+        Kp = model(data).detach().numpy()
         L = ksp.l_bar * (1-ksp.ub)
-
+    return Kp, L
 
 def rhs_bellman(kp,value,k,K,s_i):
     z, eps = ksp.s_grid[s_i, 0], ksp.s_grid[s_i, 1]
@@ -230,8 +232,7 @@ def rhs_bellman(kp,value,k,K,s_i):
 def compute_expectation(kp, Kp, value, s_i):
     expec = 0
     for s_n_i in range(4):
-        # `RectBivariateSpline`を使用
-        value_itp = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), value[:, :, s_n_i])
+        value_itp = RegularGridInterpolator((ksp.k_grid, ksp.K_grid), value[:, :, s_n_i], bounds_error=False, fill_value=None)
         expec += ksp.transmat.P[s_i, s_n_i] * value_itp((kp, Kp))
     return expec
 
@@ -483,7 +484,7 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=32, validation_split=0.2):
 
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
-zi_shocks, epsi_shocks = generate_shocks(z_shock_size=2000, population=10000) #1100から100に変更
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=200, population=10000) #1100から100に変更
 ss = Stochastic(zi_shocks, epsi_shocks)
 T_discard = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
