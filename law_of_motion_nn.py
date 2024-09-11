@@ -35,7 +35,7 @@ def KSSolution_initializer(ksp):
                           (1, ksp.K_size, ksp.s_size))
     k_opt = np.clip(k_opt, ksp.k_min, ksp.k_max)
 
-    print(k_opt.shape)
+
 
     
     # Initialize value function
@@ -411,9 +411,9 @@ def find_ALM_coef_nn(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
 class Model(nn.Module):
     def __init__(self, d_in, d_out):
         super(Model, self).__init__()
-        self.fc1 = nn.Linear(d_in, 12)
-        self.fc2 = nn.Linear(12, 12)
-        self.fc3 = nn.Linear(12, d_out)
+        self.fc1 = nn.Linear(d_in, 16)
+        self.fc2 = nn.Linear(16, 16)
+        self.fc3 = nn.Linear(16, d_out)
         self.softplus = nn.Softplus()
     
     def forward(self, x):
@@ -472,7 +472,7 @@ class ALMDataset(Dataset):
         y = self.output_data[idx]
         return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
-def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
+def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=256, validation_split=0.2):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x_g = np.empty(len(zi_shocks) - T_discard - 1)
     y_g = np.empty(len(zi_shocks) - T_discard - 1)
@@ -483,7 +483,7 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
         x_g[idx] = ss.K_ts[t]
         y_g[idx] = ss.K_ts[t + 1]
         idx += 1
-
+        
     input_data = np.column_stack((x_g, zi_shocks_x))
     output_data = y_g
     dataset = ALMDataset(input_data, output_data)
@@ -497,13 +497,14 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
     d_out = 1
     model = Model(d_in, d_out).to(device)
     loss_fn = nn.MSELoss()  # Mean Squared Error Loss
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    epochs = 3000
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
+    epochs = 1000
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
         for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
+            
 
             optimizer.zero_grad()  # Zero the gradients
 
@@ -538,15 +539,51 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
 
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
-zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1100から100に変更
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=200, population=5000) #1100から100に変更
 ss = Stochastic(zi_shocks, epsi_shocks)
 T_discard = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = Model(2, 1)
 find_ALM_coef_nn(zi_shocks, 
-            tol_ump = 1e-5, max_iter_ump = 100,
-            tol_B = 1e-5, max_iter_B = 20, 
+            tol_ump = 1e-5, max_iter_ump = 2,
+            tol_B = 1e-5, max_iter_B = 3, 
             T_discard = T_discard)
+
+pretraining()
+model.to('cpu')
+solve_ump(max_iter=4, tol=1e-8)
+
+simulate_aggregate_path(ksp, kss, zi_shocks, ss)
+ALM_nn(ksp, kss, zi_shocks, T_discard=100)
+test_data = np.column_stack((ss.K_ts[101:110], zi_shocks[101:110]))
+test_data = torch.tensor(test_data, dtype=torch.float32)
+result = model(test_data).squeeze().detach().numpy()
+print(ss.K_ts[101:110])
+print(result)
+
+print(ss.K_ts[0])
+plt.plot(ss.K_ts[1:102], label="true", color='red', linestyle='solid')
+plt.plot(result, label="approximation", color='blue', linestyle='dashed')
+plt.show()
+
+print(ss.K_ts[1])
+approx = np.zeros(101)
+approx[0] = ss.K_ts[0]
+for t in range(100):
+    approx[t+1] = model(torch.tensor([approx[t], zi_shocks[t]], dtype=torch.float32)).detach().numpy()
+    
+confirm = model(torch.tensor([approx[1], zi_shocks[1]], dtype=torch.float32)).detach().numpy()
+print(confirm)
+
+print(approx)
+
+plt.plot(ss.K_ts[1:101+1], label="true", color='red', linestyle='solid')
+plt.plot(approx, label="approximation", color='blue', linestyle='dashed')
+plt.show()
+
+
+
+
 
 def plot_ALM(kss, ksp, z_grid, zi_shocks, K_ts, count, T_discard=100):
     model.to('cpu')
@@ -555,6 +592,7 @@ def plot_ALM(kss, ksp, z_grid, zi_shocks, K_ts, count, T_discard=100):
 
     # Initialize the approximate ALM with the initial value
     K_ts_approx[T_discard] = K_ts[T_discard]
+    K_ts_approx[T_discard + 2] = model(torch.tensor([K_ts[T_discard], zi_shocks[T_discard]], dtype=torch.float32)).detach().numpy()
 
     # Compute the approximate ALM for capital
     for t in range(T_discard, len(zi_shocks) - 1):
@@ -597,7 +635,7 @@ def plot_Fig1(ksp, kss, K_ts, count):
     plt.close()
 
 
-plot_ALM(kss, ksp, ksp.z_grid, zi_shocks, ss.K_ts, T_discard=T_discard)
+plot_ALM(kss, ksp, ksp.z_grid, zi_shocks, ss.K_ts, 1, T_discard=T_discard)
 plot_Fig1(ksp, kss, ss.K_ts)
 
 
