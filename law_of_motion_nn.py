@@ -383,10 +383,11 @@ def epsi_zi_to_si(eps_i, z_i, z_size):
 
 def find_ALM_coef_nn(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
                   tol_B=1e-8, max_iter_B=20, T_discard=100):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     counter_B = 0
     pretraining()
-    model.to('cpu')
     while True:
+        model.to('cpu')
         counter_B += 1
         print(f" --- Iteration over ALM coefficient: {counter_B} ---")
         # Solve individual problem
@@ -469,6 +470,7 @@ class ALMDataset(Dataset):
         return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
 def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=32, validation_split=0.2):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x_g = np.empty(len(zi_shocks) - T_discard - 1)
     y_g = np.empty(len(zi_shocks) - T_discard - 1)
     idx = 0
@@ -490,10 +492,10 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=32, validation_split=0.2):
 
     d_in = 2
     d_out = 1
-    model = Model(d_in, d_out)
+    model = Model(d_in, d_out).to(device)
     loss_fn = nn.MSELoss()  # Mean Squared Error Loss
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    epochs = 1000
+    epochs = 3000
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -514,33 +516,28 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=32, validation_split=0.2):
 
         if epoch % 100 == 0:
             print(f'Epoch {epoch}, Loss: {running_loss / len(train_loader)}')
-
+        if loss.item() < 1e-5:
+            break
 
         
 
 
+
+
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
-zi_shocks, epsi_shocks = generate_shocks(z_shock_size=200, population=10000) #1100から100に変更
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1100から100に変更
 ss = Stochastic(zi_shocks, epsi_shocks)
-T_discard = 100
+T_discard = 10
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = Model(2, 1)
 find_ALM_coef_nn(zi_shocks, 
-            tol_ump = 1e-8, max_iter_ump = 10000,
-            tol_B = 1e-8, max_iter_B = 3, 
+            tol_ump = 1e-8, max_iter_ump = 100,
+            tol_B = 1e-8, max_iter_B = 20, 
             T_discard = T_discard)
 
-
-def compute_approxKprime(K, z, B):
-    if z == 0:
-        return np.exp(B[0] + B[1] * np.log(K))
-    elif z == 1:
-        return np.exp(B[2] + B[3] * np.log(K))
-    else:
-        raise ValueError("Unexpected value of z.")
-
 def plot_ALM(z_grid, zi_shocks, B, K_ts, T_discard=100):
+    model.to('cpu')
     # Preallocate K_ts_approx with the same size as K_ts
     K_ts_approx = np.zeros_like(K_ts)
 
@@ -549,7 +546,7 @@ def plot_ALM(z_grid, zi_shocks, B, K_ts, T_discard=100):
 
     # Compute the approximate ALM for capital
     for t in range(T_discard, len(zi_shocks) - 1):
-        K_ts_approx[t + 1] = compute_approxKprime(K_ts_approx[t], zi_shocks[t], B)
+        K_ts_approx[t + 1] = model(torch.tensor([K_ts_approx[t], z_grid[zi_shocks[t]]], dtype=torch.float32)).detach().numpy()
 
     # Plot the results
     plt.plot(range(T_discard + 1, len(K_ts)), K_ts[T_discard + 1:], label="true", color='red', linestyle='solid')
@@ -563,9 +560,13 @@ def plot_Fig1(ksp, kss, K_ts):
     K_min, K_max = np.min(K_ts), np.max(K_ts)
     K_lim = np.linspace(K_min, K_max, 100)
     
-    # Kp_gとKp_bを計算
-    Kp_g = np.exp(kss.B[0] + kss.B[1] * np.log(K_lim))
-    Kp_b = np.exp(kss.B[2] + kss.B[3] * np.log(K_lim))
+    plot_z_g = np.full(ksp.z_grid[0], 100)
+    plot_z_b = np.full(ksp.z_grid[1], 100)
+    
+    plot_data_g = np.column_stack((K_lim, plot_z_g))
+    plot_data_b = np.column_stack((K_lim, plot_z_b))
+    Kp_g = model(torch.tensor(plot_data_g, dtype=torch.float32)).detach().numpy()
+    Kp_b = model(torch.tensor(plot_data_b, dtype=torch.float32)).detach().numpy()
     
     # グラフを作成
     plt.plot(K_lim, Kp_g, label="Good", linestyle='solid')
