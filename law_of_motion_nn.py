@@ -382,7 +382,7 @@ def epsi_zi_to_si(eps_i, z_i, z_size):
 
 
 def find_ALM_coef_nn(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
-                  tol_B=1e-8, max_iter_B=20, T_discard=100):
+                  tol_B=1e-8, max_iter_B=20, T_discard=1000):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     counter_B = 0
     pretraining()
@@ -398,6 +398,9 @@ def find_ALM_coef_nn(zi_shocks, tol_ump=1e-8, max_iter_ump=100,
 
         model.to(device)
         ALM_nn(ksp, kss, zi_shocks, T_discard=T_discard)
+        plot_ALM(kss, ksp, ksp.z_grid, zi_shocks, ss.K_ts, counter_B, T_discard=T_discard)
+        plot_Fig1(ksp, kss, ss.K_ts, counter_B)
+        
 
         if counter_B >= max_iter_B:
             print("----------------------------------------------------------------")
@@ -469,7 +472,7 @@ class ALMDataset(Dataset):
         y = self.output_data[idx]
         return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
-def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=32, validation_split=0.2):
+def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x_g = np.empty(len(zi_shocks) - T_discard - 1)
     y_g = np.empty(len(zi_shocks) - T_discard - 1)
@@ -514,9 +517,18 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=32, validation_split=0.2):
             
             running_loss += loss.item()
 
-        if epoch % 100 == 0:
-            print(f'Epoch {epoch}, Loss: {running_loss / len(train_loader)}')
-        if loss.item() < 1e-5:
+        if epoch % 500 == 0:
+            model.eval()
+            with torch.no_grad():
+                val_loss = 0.0
+                for inputs, targets in val_loader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    predictions = model(inputs).squeeze()
+                    loss = loss_fn(predictions, targets)
+                    val_loss += loss.item()
+            print(f"Epoch {epoch} - Training loss: {running_loss / len(train_loader)} - Validation loss: {val_loss / len(val_loader)}")
+
+        if val_loss/len(val_loader) < 1e-5:
             break
 
         
@@ -528,15 +540,15 @@ ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
 zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1100から100に変更
 ss = Stochastic(zi_shocks, epsi_shocks)
-T_discard = 10
+T_discard = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = Model(2, 1)
 find_ALM_coef_nn(zi_shocks, 
-            tol_ump = 1e-8, max_iter_ump = 100,
-            tol_B = 1e-8, max_iter_B = 20, 
+            tol_ump = 1e-5, max_iter_ump = 100,
+            tol_B = 1e-5, max_iter_B = 20, 
             T_discard = T_discard)
 
-def plot_ALM(z_grid, zi_shocks, B, K_ts, T_discard=100):
+def plot_ALM(kss, ksp, z_grid, zi_shocks, K_ts, count, T_discard=100):
     model.to('cpu')
     # Preallocate K_ts_approx with the same size as K_ts
     K_ts_approx = np.zeros_like(K_ts)
@@ -546,22 +558,26 @@ def plot_ALM(z_grid, zi_shocks, B, K_ts, T_discard=100):
 
     # Compute the approximate ALM for capital
     for t in range(T_discard, len(zi_shocks) - 1):
-        K_ts_approx[t + 1] = model(torch.tensor([K_ts_approx[t], z_grid[zi_shocks[t]]], dtype=torch.float32)).detach().numpy()
+        K_ts_approx[t + 1] = model(torch.tensor([K_ts_approx[t], zi_shocks[t]], dtype=torch.float32)).detach().numpy()
 
     # Plot the results
     plt.plot(range(T_discard + 1, len(K_ts)), K_ts[T_discard + 1:], label="true", color='red', linestyle='solid')
     plt.plot(range(T_discard + 1, len(K_ts)), K_ts_approx[T_discard + 1:], label="approximation", color='blue', linestyle='dashed')
     plt.title("Aggregate Law of Motion for Capital")
     plt.legend()
-    plt.show()
 
-def plot_Fig1(ksp, kss, K_ts):
+    # Save the plot to a file with the count value in the filename
+    plt.savefig(f'ALM_plot_{count}.png')  # Using f-string to include count
+    plt.close()
+
+
+def plot_Fig1(ksp, kss, K_ts, count):
     # K_tsの最小値と最大値を取得
     K_min, K_max = np.min(K_ts), np.max(K_ts)
     K_lim = np.linspace(K_min, K_max, 100)
     
-    plot_z_g = np.full(ksp.z_grid[0], 100)
-    plot_z_b = np.full(ksp.z_grid[1], 100)
+    plot_z_g = np.full(100, ksp.z_grid[0])
+    plot_z_b = np.full(100, ksp.z_grid[1])
     
     plot_data_g = np.column_stack((K_lim, plot_z_g))
     plot_data_b = np.column_stack((K_lim, plot_z_b))
@@ -575,10 +591,13 @@ def plot_Fig1(ksp, kss, K_ts):
     
     plt.title("FIG1: Tomorrow's vs. today's aggregate capital")
     plt.legend()
-    plt.show()
+
+    # Save the plot to a file instead of displaying it
+    plt.savefig(f'Fig1_plot_{count}.png')
+    plt.close()
 
 
-plot_ALM(ksp.z_grid, zi_shocks, kss.B, ss.K_ts, T_discard=T_discard)
+plot_ALM(kss, ksp, ksp.z_grid, zi_shocks, ss.K_ts, T_discard=T_discard)
 plot_Fig1(ksp, kss, ss.K_ts)
 
 
