@@ -498,7 +498,7 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
     model = Model(d_in, d_out).to(device)
     loss_fn = nn.MSELoss()  # Mean Squared Error Loss
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    epochs = 3000
+    epochs = 4000
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
@@ -538,7 +538,7 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=64, validation_split=0.2):
 
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
-zi_shocks, epsi_shocks = generate_shocks(z_shock_size=1100, population=10000) #1100から100に変更
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=3100, population=10000) #1100から100に変更
 ss = Stochastic(zi_shocks, epsi_shocks)
 T_discard = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -547,6 +547,7 @@ find_ALM_coef_nn(zi_shocks,
             tol_ump = 1e-5, max_iter_ump = 100,
             tol_B = 1e-5, max_iter_B = 20, 
             T_discard = T_discard)
+
 
 def plot_ALM(kss, ksp, z_grid, zi_shocks, K_ts, count, T_discard=100):
     model.to('cpu')
