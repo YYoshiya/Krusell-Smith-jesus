@@ -479,18 +479,25 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=256, validation_split=0.2)
     idx = 0
     zi_shocks_x = zi_shocks[T_discard:-1]
     zi_shocks_y = zi_shocks[T_discard + 1:]
+    mean = ss.K_ts.mean()
+    std = ss.K_ts.std()
+    K_ts_norm = (ss.K_ts - mean) / std
     for t in range(T_discard, len(zi_shocks) - 1):
-        x_g[idx] = ss.K_ts[t]
-        y_g[idx] = ss.K_ts[t + 1]
+        x_g[idx] = K_ts_norm[t]
+        y_g[idx] = K_ts_norm[t + 1]
         idx += 1
-        
+    
     input_data = np.column_stack((x_g, zi_shocks_x))
     output_data = y_g
     dataset = ALMDataset(input_data, output_data)
     train_size = int((1 - validation_split) * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    for inputs, targets in train_loader:
+        print("inputs:", inputs)
+        print("targets:", targets)
+        break
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     d_in = 2
@@ -498,13 +505,13 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=256, validation_split=0.2)
     model = Model(d_in, d_out).to(device)
     loss_fn = nn.MSELoss()  # Mean Squared Error Loss
     optimizer = optim.Adam(model.parameters(), lr=0.01)
-    epochs = 1000
+    epochs = 4000
     for epoch in range(epochs):
         model.train()
         running_loss = 0.0
         for inputs, targets in train_loader:
             inputs, targets = inputs.to(device), targets.to(device)
-            
+
 
             optimizer.zero_grad()  # Zero the gradients
 
@@ -531,6 +538,7 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=256, validation_split=0.2)
 
         if val_loss/len(val_loader) < 1e-5:
             break
+    return K_ts_norm
 
         
 
@@ -539,7 +547,7 @@ def ALM_nn(ksp, kss, zi_shocks, T_discard, batch_size=256, validation_split=0.2)
 
 ksp = KSParameter()
 kss = KSSolution_initializer(ksp)
-zi_shocks, epsi_shocks = generate_shocks(z_shock_size=200, population=5000) #1100から100に変更
+zi_shocks, epsi_shocks = generate_shocks(z_shock_size=2100, population=5000) #1100から100に変更
 ss = Stochastic(zi_shocks, epsi_shocks)
 T_discard = 100
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -551,24 +559,24 @@ find_ALM_coef_nn(zi_shocks,
 
 pretraining()
 model.to('cpu')
-solve_ump(max_iter=4, tol=1e-8)
+solve_ump(max_iter=5, tol=1e-8)
 
 simulate_aggregate_path(ksp, kss, zi_shocks, ss)
-ALM_nn(ksp, kss, zi_shocks, T_discard=100)
-test_data = np.column_stack((ss.K_ts[101:110], zi_shocks[101:110]))
+K_ts_norm = ALM_nn(ksp, kss, zi_shocks, T_discard=100)
+test_data = np.column_stack((K_ts_norm[102:111], zi_shocks[102:111]))
 test_data = torch.tensor(test_data, dtype=torch.float32)
 result = model(test_data).squeeze().detach().numpy()
-print(ss.K_ts[101:110])
+print(K_ts_norm[103:112])
 print(result)
 
-print(ss.K_ts[0])
-plt.plot(ss.K_ts[1:102], label="true", color='red', linestyle='solid')
+print(K_ts_norm[0])
+plt.plot(K_ts_norm[1:102], label="true", color='red', linestyle='solid')
 plt.plot(result, label="approximation", color='blue', linestyle='dashed')
 plt.show()
 
-print(ss.K_ts[1])
+print(K_ts_norm[1])
 approx = np.zeros(101)
-approx[0] = ss.K_ts[0]
+approx[0] = K_ts_norm[0]
 for t in range(100):
     approx[t+1] = model(torch.tensor([approx[t], zi_shocks[t]], dtype=torch.float32)).detach().numpy()
     
@@ -577,7 +585,7 @@ print(confirm)
 
 print(approx)
 
-plt.plot(ss.K_ts[1:101+1], label="true", color='red', linestyle='solid')
+plt.plot(K_ts_norm[1:101+1], label="true", color='red', linestyle='solid')
 plt.plot(approx, label="approximation", color='blue', linestyle='dashed')
 plt.show()
 
